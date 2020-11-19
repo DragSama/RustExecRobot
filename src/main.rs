@@ -30,6 +30,45 @@ async fn is_valid(_context: &Context, command: &BotCommand) -> Result<bool, Infa
     Ok(command.get_message().get_text().unwrap().data.starts_with("/rustexec"))
 }
 
+async fn shell_is_valid(_context: &Context, command: &BotCommand) -> Result<bool, Infallible> {
+    Ok(command.get_message().get_text().unwrap().data.starts_with("/sh"))
+}
+
+#[handler(predicate=shell_is_valid)]
+async fn shell_handler(context: &Context, command: BotCommand) -> Result<(), ExecuteError> {
+    let user_id = command.get_message().get_user().unwrap().id;
+    let chat_id = command.get_message().get_chat_id();
+    let args = command.get_args();
+    if !context.users.contains(&user_id){
+        return Ok(());
+    };
+
+    if args.len() == 0 {
+        let method = SendMessage::new(chat_id, "Format: /sh code");
+        context.api.execute(method).await?;
+        return Ok(());
+    }
+
+    // let code: String = args.into_iter().map(|i| i.to_string()).collect();
+    // turns out args doesn't preserve space
+
+    let cmd = command.get_message()
+        .get_text()
+        .unwrap()
+        .data.as_str()
+        .replace("/sh", "");
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd").arg("/C").arg(cmd).output().expect("Error occured while running cargo run")
+    } else {
+        Command::new("sh").arg("-c").arg(cmd).output().expect("Error occured while running cargo run")
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let msg = format!("*STDERR:*\n`{}`\n*STDOUT*:\n`{}`", stderr, stdout);
+    let method = SendMessage::new(chat_id, msg)
+                .parse_mode(ParseMode::Markdown);
+    context.api.execute(method).await?;
+    Ok(())
 
 #[handler(predicate=is_valid)]
 async fn exec_handler(context: &Context, command: BotCommand) -> Result<(), ExecuteError> {
@@ -106,6 +145,7 @@ async fn main() {
         };
         println!("Created builds folder.");
     }
+    dispatcher.add_handler(shell_handler);
     dispatcher.add_handler(exec_handler);
     LongPoll::new(api, dispatcher).run().await
 }
