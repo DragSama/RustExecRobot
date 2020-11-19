@@ -69,6 +69,7 @@ async fn shell_handler(context: &Context, command: BotCommand) -> Result<(), Exe
                 .parse_mode(ParseMode::Markdown);
     context.api.execute(method).await?;
     Ok(())
+}
 
 #[handler(predicate=is_valid)]
 async fn exec_handler(context: &Context, command: BotCommand) -> Result<(), ExecuteError> {
