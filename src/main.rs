@@ -97,11 +97,17 @@ async fn exec_handler(context: &Context, command: BotCommand) -> Result<(), Exec
     let path = Path::new("builds/bot/src/main.rs");
 
     let mut file = match fs::File::create(&path) {
-        Err(err) => panic!("Error: {}", err),
+        Err(err) => {
+            eprintln!("ERROR: {}", err);
+            return Ok(())
+        },
         Ok(file) => file
     };
     match file.write_all(code.as_bytes()){
-        Err(err) => panic!("Error: {}", err),
+        Err(err) => {
+            eprintln!("ERROR: {}", err);
+            return Ok(())
+        },
         Ok(_) => println!("Running code: {}", code)
     };
     let output = if cfg!(target_os = "windows") {
