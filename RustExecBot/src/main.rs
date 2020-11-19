@@ -1,5 +1,3 @@
-extern crate serde_json;
-
 use carapax::{
     handler,
     Api,
@@ -8,39 +6,33 @@ use carapax::{
     longpoll::LongPoll,
     methods::{SendMessage},
     types::{
-        Command
+        Command as BotCommand,
+        ParseMode
     }
 };
 
-use reqwest::Client;
-use serde::Deserialize;
 use std::{
     env,
-    convert::Infallible
+    fs,
+    path::Path,
+    convert::Infallible,
+    process::Command,
+    io::Write
 };
 
 struct Context {
     api: Api,
-    users: Vec<i64>,
-    reqwest_client: Client
+    users: Vec<i64>
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(rename_all="PascalCase")]
-struct Data {
-    warnings: Option<String>,
-    errors: Option<String>,
-    result: Option<String>,
-    stats: String
-}
 
-async fn is_valid(_context: &Context, command: &Command) -> Result<bool, Infallible> {
+async fn is_valid(_context: &Context, command: &BotCommand) -> Result<bool, Infallible> {
     Ok(command.get_message().get_text().unwrap().data.starts_with("/rustexec"))
 }
 
 
 #[handler(predicate=is_valid)]
-async fn exec_handler(context: &Context, command: Command) -> Result<(), ExecuteError> {
+async fn exec_handler(context: &Context, command: BotCommand) -> Result<(), ExecuteError> {
     let user_id = command.get_message().get_user().unwrap().id;
     let chat_id = command.get_message().get_chat_id();
     let args = command.get_args();
@@ -62,49 +54,27 @@ async fn exec_handler(context: &Context, command: Command) -> Result<(), Execute
         .unwrap()
         .data.as_str()
         .replace("/rustexec", "");
-    let data = vec![("LanguageChoice", "46"), ("Program", &code)];
-    let resp = match context.reqwest_client.post("https://rextester.com/rundotnet/api")
-            .form(&data)
-            .send()
-            .await{
-                Ok(resp) => match resp.text().await {
-                    Ok(resp) => resp,
-                    Err(err) => {
-                        eprintln!("ERROR: {}", err);
-                        return Ok(());
-                    }
-                },
-                Err(err) => {
-                    eprintln!("ERROR: {}", err);
-                    return Ok(());
-                }
-            };
-    let output: Data = match serde_json::from_str(&resp) {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!("ERROR: {}", err);
-            return Ok(());
-        }
+    let path = Path::new("builds/bot/src/main.rs");
+
+    let mut file = match fs::File::create(&path) {
+        Err(err) => panic!("Error: {}", err),
+        Ok(file) => file
     };
-    if !output.result.is_some(){
-        let mut reply_message = String::from("Error:\n");
-        reply_message.push_str(output.errors.unwrap().as_str());
-        if output.warnings.is_some(){
-            reply_message.push_str("\nWarnings:\n");
-            reply_message.push_str(output.warnings.unwrap().as_str());
-        };
-        let method = SendMessage::new(chat_id, reply_message);
-        context.api.execute(method).await?;
+    match file.write_all(code.as_bytes()){
+        Err(err) => panic!("Error: {}", err),
+        Ok(_) => println!("Running code: {}", code)
+    };
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd").arg("/C").arg("cd builds && cd bot && cargo run").output().expect("Error occured while running cargo run")
     } else {
-        let mut reply_message = String::from("Output:\n");
-        reply_message.push_str(output.result.unwrap().as_str());
-        if output.warnings.is_some(){
-            reply_message.push_str("\nWarnings:\n");
-            reply_message.push_str(output.warnings.unwrap().as_str());
-        };
-        let method = SendMessage::new(chat_id, reply_message);
-        context.api.execute(method).await?;
+        Command::new("sh").arg("-c").arg("cd builds && cd bot && cargo run").output().expect("Error occured while running cargo run")
     };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let msg = format!("*STDERR:*\n`{}`\n*STDOUT*:\n`{}`", stderr, stdout);
+    let method = SendMessage::new(chat_id, msg)
+                .parse_mode(ParseMode::Markdown);
+    context.api.execute(method).await?;
     Ok(())
 }
 
@@ -115,13 +85,27 @@ async fn main() {
     let split = allowed.split(" ");
     let users: Vec<i64> = split.into_iter().map(|x| x.parse::<i64>().unwrap()).collect();
     let api = Api::new(token).expect("Failed to create API");
-    let client = Client::new();
 
     let mut dispatcher = Dispatcher::new(
-        Context {api: api.clone(), users: users, reqwest_client: client}
+        Context {api: api.clone(), users: users}
     );
-
+    if !Path::new("builds").is_dir(){
+        println!("builds folder does not exist, Creating...");
+        fs::create_dir("builds").expect("Failed to create builds folder.");
+        if cfg!(target_os = "windows") {
+            Command::new("cmd")
+                    .args(&["/C", "cargo new builds/bot"])
+                    .output()
+                    .expect("failed to run cargo new")
+        } else {
+            Command::new("sh")
+                    .arg("-c")
+                    .arg("cargo new builds/bot")
+                    .output()
+                    .expect("failed to run cargo new")
+        };
+        println!("Created builds folder.");
+    }
     dispatcher.add_handler(exec_handler);
-
     LongPoll::new(api, dispatcher).run().await
 }
